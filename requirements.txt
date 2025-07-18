@@ -1,5 +1,5 @@
 # Specify a stable Python version
-python==3.11
+python==3.10
 
 # App dependencies
 streamlit
