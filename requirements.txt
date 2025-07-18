@@ -1,6 +1,3 @@
-# Specify a stable Python version
-python==3.10
-
-# App dependencies
 streamlit
 pytubefix
+moviepy
