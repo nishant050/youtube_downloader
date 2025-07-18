@@ -1,10 +1,9 @@
-# To run this app, you need to install streamlit, pytubefix, and moviepy:
-# pip install streamlit pytubefix moviepy
-#
-# Then, save this code as a Python file (e.g., app.py) and run from your terminal:
-# streamlit run app.py
-#
-# For Streamlit Cloud, you also need a packages.txt file with "ffmpeg" in it.
+# For Streamlit Cloud, you need:
+# 1. A requirements.txt file with:
+#    streamlit
+#    pytubefix
+# 2. A packages.txt file with:
+#    ffmpeg
 
 import streamlit as st
 from pytubefix import YouTube
@@ -12,28 +11,47 @@ from pytubefix.exceptions import PytubeFixError
 from urllib.error import HTTPError
 import os
 import time
-from moviepy.editor import VideoFileClip, AudioFileClip
+import subprocess
 
-def combine_video_audio(video_path, audio_path, output_path, status_text):
-    """Merges video and audio files using MoviePy."""
-    status_text.text("Merging video and audio... This may take a moment.")
+def combine_video_audio_ffmpeg(video_path, audio_path, output_path, status_text):
+    """Merges video and audio files using a direct FFmpeg subprocess call."""
+    status_text.text("Merging video and audio with FFmpeg...")
+    
+    # The FFmpeg command
+    command = [
+        'ffmpeg',
+        '-i', video_path,
+        '-i', audio_path,
+        '-c:v', 'copy',      # Copy the video stream without re-encoding
+        '-c:a', 'aac',       # Re-encode audio to AAC (a safe, compatible choice)
+        '-strict', 'experimental',
+        '-y',                # Overwrite output file if it exists
+        output_path
+    ]
+    
     try:
-        video_clip = VideoFileClip(video_path)
-        audio_clip = AudioFileClip(audio_path)
-        final_clip = video_clip.set_audio(audio_clip)
-        final_clip.write_videofile(output_path, codec='libx264', audio_codec='aac', logger=None) # Set logger to None to avoid progress bars in console
-        video_clip.close()
-        audio_clip.close()
+        # Execute the command
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        st.info("FFmpeg stdout: " + result.stdout)
+        st.info("FFmpeg stderr: " + result.stderr)
         return output_path
-    except Exception as e:
-        st.error(f"Error during merge process: {e}")
+    except subprocess.CalledProcessError as e:
+        # This block will run if FFmpeg returns a non-zero exit code (an error)
+        st.error("An error occurred during the FFmpeg merge process.")
+        st.error(f"FFmpeg command failed with exit code {e.returncode}")
+        st.error("FFmpeg stderr: " + e.stderr)
+        st.error("FFmpeg stdout: " + e.stdout)
+        return None
+    except FileNotFoundError:
+        st.error("FFmpeg not found. Please ensure it is installed and in your system's PATH.")
+        st.error("If on Streamlit Cloud, ensure you have a packages.txt file with 'ffmpeg' in it.")
         return None
 
 
 def download_hq_video(url, progress_bar, status_text):
     """
     Downloads the highest quality video and audio from a YouTube URL,
-    merges them, and provides a download link and video player.
+    merges them using FFmpeg, and provides a download link and video player.
     """
     try:
         # --- Create a 'downloads' directory ---
@@ -69,13 +87,13 @@ def download_hq_video(url, progress_bar, status_text):
         audio_filepath = audio_stream.download(output_path=downloads_path, filename_prefix="audio_")
 
         # --- Combine Files ---
-        progress_bar.progress(50) # Show some progress
+        progress_bar.progress(50)
         
         sanitized_title = "".join(c for c in yt.title if c.isalnum() or c in (' ', '.', '_')).rstrip()
         output_filename = f"{sanitized_title}.mp4"
         output_filepath = os.path.join(downloads_path, output_filename)
         
-        final_video_path = combine_video_audio(video_filepath, audio_filepath, output_filepath, status_text)
+        final_video_path = combine_video_audio_ffmpeg(video_filepath, audio_filepath, output_filepath, status_text)
         
         if final_video_path is None:
             return # Stop if merging failed
@@ -102,16 +120,14 @@ def download_hq_video(url, progress_bar, status_text):
         # --- Cleanup ---
         os.remove(video_filepath)
         os.remove(audio_filepath)
-        os.remove(final_video_path) # Safely remove the final file after reading it into memory
+        os.remove(final_video_path)
 
     except HTTPError as e:
         st.error(f"Network Error: {e}")
-        st.warning("This could be an invalid URL, an age-restricted video, or a temporary YouTube issue.")
     except PytubeFixError as e:
         st.error(f"PytubeFix Error: {e}")
     except Exception as e:
         st.error(f"An unexpected error occurred: {e}")
-        st.info("Please check the URL and your internet connection.")
 
 # --- Streamlit App UI ---
 st.set_page_config(page_title="HQ YouTube Downloader", layout="centered")
@@ -130,4 +146,4 @@ if st.button("Download Video"):
         st.warning("Please enter a YouTube URL.")
 
 st.markdown("---")
-st.markdown("Created with Streamlit, Pytubefix, and MoviePy.")
+st.markdown("Created with Streamlit and Pytubefix. Merged with FFmpeg.")
