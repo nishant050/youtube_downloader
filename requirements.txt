@@ -1,3 +1,7 @@
 streamlit
+fastapi
+uvicorn
 pytubefix
+python-multipart
+aiofiles
 moviepy
