@@ -1,37 +1,36 @@
-# For Streamlit Cloud, you need:
-# 1. A requirements.txt file with:
-#    streamlit
-#    pytubefix
-# 2. A packages.txt file with:
-#    ffmpeg
+# Save this file as api.py
+# Required libraries in requirements.txt:
+# fastapi
+# uvicorn
+# pytubefix
+# python-multipart
+# aiofiles
 
-import streamlit as st
+import os
+import subprocess
+import time
+import asyncio
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from pytubefix import YouTube
 from pytubefix.exceptions import PytubeFixError
-from urllib.error import HTTPError
-import os
-import time
-import subprocess
+from starlette.background import BackgroundTasks
+
+# --- Configuration & Setup ---
+
+# Create a directory for temporary downloads
+DOWNLOADS_DIR = "temp_downloads"
+if not os.path.exists(DOWNLOADS_DIR):
+    os.makedirs(DOWNLOADS_DIR)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="YouTube Downloader API",
+    description="An API to fetch info and download high-quality YouTube videos by merging video and audio streams.",
+    version="1.0.0",
+)
 
 # --- Helper Functions ---
-
-def combine_video_audio_ffmpeg(video_path, audio_path, output_path, status_text):
-    """Merges video and audio files using a direct FFmpeg subprocess call."""
-    status_text.text("Merging video and audio with FFmpeg...")
-    command = [
-        'ffmpeg', '-i', video_path, '-i', audio_path,
-        '-c:v', 'copy', '-c:a', 'aac', '-strict', 'experimental', '-y', output_path
-    ]
-    try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
-        return output_path
-    except subprocess.CalledProcessError as e:
-        st.error("An error occurred during the FFmpeg merge process.")
-        st.error(f"FFmpeg stderr: {e.stderr}")
-        return None
-    except FileNotFoundError:
-        st.error("FFmpeg not found. Ensure it's installed and in your system's PATH.")
-        return None
 
 def format_size(size_bytes):
     """Formats size in bytes to a readable MB format."""
@@ -39,114 +38,153 @@ def format_size(size_bytes):
         return "N/A"
     return f"{round(size_bytes / (1024*1024), 2)} MB"
 
-# --- Main Application Logic ---
+def combine_video_audio_ffmpeg(video_path, audio_path, output_path):
+    """Merges video and audio files using a direct FFmpeg subprocess call."""
+    command = [
+        'ffmpeg', '-i', video_path, '-i', audio_path,
+        '-c:v', 'copy', '-c:a', 'aac', '-y', output_path
+    ]
+    try:
+        # Using asyncio.create_subprocess_exec for non-blocking execution
+        process = subprocess.run(command, check=True, capture_output=True, text=True)
+        print("FFmpeg stdout:", process.stdout)
+        print("FFmpeg stderr:", process.stderr)
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg Error: {e.stderr}")
+        raise HTTPException(status_code=500, detail=f"FFmpeg merging failed: {e.stderr}")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="FFmpeg not found on the server. Please ensure it's installed.")
 
-st.set_page_config(page_title="HQ YouTube Downloader", layout="centered")
-st.title("🎬 YouTube Video Downloader")
-st.write("Paste a YouTube URL, fetch available qualities, and download your preferred version.")
-
-# --- Session State Initialization ---
-if 'streams' not in st.session_state:
-    st.session_state.streams = None
-if 'yt' not in st.session_state:
-    st.session_state.yt = None
-if 'url' not in st.session_state:
-    st.session_state.url = ""
-
-video_url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
-
-if st.button("Fetch Available Qualities"):
-    if video_url:
-        st.session_state.url = video_url
+def cleanup_files(*file_paths):
+    """Deletes specified files from the server."""
+    for path in file_paths:
         try:
-            with st.spinner("Fetching video details..."):
-                st.session_state.yt = YouTube(video_url)
-                # Filter for mp4 files and get both adaptive and progressive streams
-                st.session_state.streams = st.session_state.yt.streams.filter(file_extension='mp4').order_by('resolution').desc()
+            if os.path.exists(path):
+                os.remove(path)
+                print(f"Cleaned up file: {path}")
         except Exception as e:
-            st.error(f"Could not fetch video details: {e}")
-            st.session_state.streams = None
-            st.session_state.yt = None
-    else:
-        st.warning("Please enter a YouTube URL.")
-        st.session_state.streams = None
-        st.session_state.yt = None
+            print(f"Error cleaning up file {path}: {e}")
 
-if st.session_state.streams:
-    st.write(f"**Title:** {st.session_state.yt.title}")
-    
-    stream_options = []
-    for s in st.session_state.streams:
-        stream_type = "Video + Audio" if s.is_progressive else "Video Only"
-        label = f"{s.resolution} ({stream_type}) - {format_size(s.filesize)}"
-        stream_options.append((label, s.itag))
+# --- API Endpoints ---
 
-    # Use a radio button for selection
-    selected_option = st.radio(
-        "Select a quality to download:",
-        options=[opt[0] for opt in stream_options],
-        key="quality_select"
-    )
+@app.get("/info", summary="Get Video Information and Available Streams")
+async def get_video_info(url: str = Query(..., description="The full URL of the YouTube video.")):
+    """
+    Fetches metadata and available stream formats for a given YouTube URL.
+    It separates video-only and audio-only streams for high-quality merging.
+    """
+    try:
+        yt = YouTube(url)
+        
+        # Filter for adaptive streams (video-only, no audio)
+        video_streams = yt.streams.filter(
+            adaptive=True, file_extension='mp4', only_video=True
+        ).order_by('resolution').desc()
+        
+        # Filter for audio-only streams
+        audio_streams = yt.streams.filter(
+            adaptive=True, file_extension='mp4', only_audio=True
+        ).order_by('abr').desc()
 
-    if st.button("Download Selected Quality"):
-        with st.spinner('Processing... This may take a few moments.'):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Find the itag corresponding to the selected label
-            selected_itag = None
-            for label, itag in stream_options:
-                if label == selected_option:
-                    selected_itag = itag
-                    break
+        return {
+            "title": yt.title,
+            "thumbnail_url": yt.thumbnail_url,
+            "duration": time.strftime("%H:%M:%S", time.gmtime(yt.length)),
+            "video_formats": [
+                {"resolution": s.resolution, "size_mb": format_size(s.filesize), "itag": s.itag}
+                for s in video_streams
+            ],
+            "audio_formats": [
+                {"abr": s.abr, "size_mb": format_size(s.filesize), "itag": s.itag}
+                for s in audio_streams
+            ],
+        }
+    except PytubeFixError as e:
+        raise HTTPException(status_code=404, detail=f"Could not process video. PytubeFix error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected server error occurred: {e}")
 
-            if selected_itag:
-                stream = st.session_state.yt.streams.get_by_itag(selected_itag)
-                
-                downloads_path = 'downloads'
-                if not os.path.exists(downloads_path):
-                    os.makedirs(downloads_path)
 
-                sanitized_title = "".join(c for c in st.session_state.yt.title if c.isalnum() or c in (' ', '.', '_')).rstrip()
-                output_filename = f"{sanitized_title} - {stream.resolution}.mp4"
-                output_filepath = os.path.join(downloads_path, output_filename)
+@app.get("/download", summary="Download and Merge Video and Audio")
+async def download_video(
+    background_tasks: BackgroundTasks,
+    url: str = Query(..., description="The full URL of the YouTube video."),
+    video_itag: int = Query(..., description="The 'itag' of the desired video stream from the /info endpoint."),
+    audio_itag: int = Query(..., description="The 'itag' of the desired audio stream from the /info endpoint.")
+):
+    """
+    Downloads the selected video and audio streams, merges them with FFmpeg,
+    and provides a direct link to the final file. The temporary files are cleaned up
+    after the response is sent.
+    """
+    try:
+        yt = YouTube(url)
+        video_stream = yt.streams.get_by_itag(video_itag)
+        audio_stream = yt.streams.get_by_itag(audio_itag)
 
-                final_video_path = None
+        if not video_stream or not audio_stream:
+            raise HTTPException(status_code=404, detail="Invalid video or audio itag selected.")
 
-                if stream.is_progressive:
-                    status_text.text(f"Downloading {stream.resolution} (Video + Audio)...")
-                    final_video_path = stream.download(output_path=downloads_path, filename=output_filename)
-                    progress_bar.progress(100)
-                else: # It's an adaptive stream (video only)
-                    status_text.text(f"Downloading {stream.resolution} (video component)...")
-                    video_filepath = stream.download(output_path=downloads_path, filename_prefix="video_")
-                    progress_bar.progress(50)
-                    
-                    status_text.text("Finding and downloading best audio component...")
-                    audio_stream = st.session_state.yt.streams.filter(only_audio=True, file_extension='mp4').order_by('abr').desc().first()
-                    audio_filepath = audio_stream.download(output_path=downloads_path, filename_prefix="audio_")
-                    
-                    final_video_path = combine_video_audio_ffmpeg(video_filepath, audio_filepath, output_filepath, status_text)
-                    os.remove(video_filepath)
-                    os.remove(audio_filepath)
-                
-                if final_video_path:
-                    progress_bar.progress(100)
-                    status_text.text("Download and processing complete!")
-                    st.success("Your video is ready!")
+        sanitized_title = "".join(c for c in yt.title if c.isalnum() or c in (' ', '.', '_')).rstrip()
+        
+        # Define temporary file paths
+        timestamp = int(time.time())
+        video_filepath = video_stream.download(output_path=DOWNLOADS_DIR, filename_prefix=f"video_{timestamp}_")
+        audio_filepath = audio_stream.download(output_path=DOWNLOADS_DIR, filename_prefix=f"audio_{timestamp}_")
+        
+        output_filename = f"{sanitized_title}_{video_stream.resolution}.mp4"
+        output_filepath = os.path.join(DOWNLOADS_DIR, output_filename)
 
-                    with open(final_video_path, "rb") as file:
-                        video_bytes = file.read()
-                    
-                    st.video(video_bytes)
-                    
-                    st.download_button(
-                        label="Download Video File",
-                        data=video_bytes,
-                        file_name=output_filename,
-                        mime="video/mp4"
-                    )
-                    os.remove(final_video_path)
+        # Merge the files
+        combine_video_audio_ffmpeg(video_filepath, audio_filepath, output_filepath)
 
-st.markdown("---")
-st.markdown("Created with Streamlit and Pytubefix. Merged with FFmpeg.")
+        # Add cleanup tasks to run after the response is sent
+        background_tasks.add_task(cleanup_files, video_filepath, audio_filepath, output_filepath)
+
+        return FileResponse(
+            path=output_filepath,
+            media_type='video/mp4',
+            filename=output_filename
+        )
+
+    except PytubeFixError as e:
+        raise HTTPException(status_code=404, detail=f"Could not process video. PytubeFix error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected server error occurred: {e}")
+
+# To run this API locally:
+# 1. Save the code as api.py
+# 2. Run in your terminal: uvicorn api:app --reload
+# 3. Access the interactive API docs at http://127.0.0.1:8000/docs
+
+"""
+
+### How to Use This API
+
+1.  **Deployment:** This Python script is a standalone application. You need to deploy it separately from your Node.js dashboard. You can deploy it to **Render** as a **Web Service**, but this time, you'll select **Python** as the runtime.
+    * **Build Command:** `pip install -r requirements.txt`
+    * **Start Command:** `uvicorn api:app --host 0.0.0.0 --port $PORT`
+
+2.  **`requirements.txt`:** You will need a `requirements.txt` file in the same directory as `api.py` with the following content:
+    ```
+    fastapi
+    uvicorn
+    pytubefix
+    python-multipart
+    aiofiles
+    ```
+
+3.  **`packages.txt` (for Render):** To install FFmpeg on Render's Python environment, you'll also need a `packages.txt` file with:
+    ```
+    ffmpeg
+    ```
+
+4.  **Integration with Your Dashboard:**
+    * You would now update your Node.js `server.js` and the YouTube downloader's `client.js`.
+    * The `client.js` would first make a request to your new Python API's `/info` endpoint (e.g., `https://your-python-api.onrender.com/info?url=...`).
+    * After the user selects a quality, the `client.js` would then construct the download URL pointing to your Python API's `/download` endpoint (e.g., `https://your-python-api.onrender.com/download?url=...&video_itag=...&audio_itag=...`).
+
+This architecture is much more robust and scalable. It lets each part of your project (the Node.js dashboard and the Python API) do what it does best. 
+
+"""
