@@ -32,8 +32,11 @@ if not os.path.exists(DOWNLOADS_DIR):
     os.makedirs(DOWNLOADS_DIR)
 
 # --- FastAPI App ---
-# This is now the main application that will run everything
-app = FastAPI(
+# Main app that will host everything
+app = FastAPI(title="Main Dashboard App")
+
+# Sub-app specifically for the API
+api_app = FastAPI(
     title="YouTube Downloader API",
     description="An API to fetch info and download high-quality YouTube videos by merging video and audio streams.",
     version="1.0.0",
@@ -68,8 +71,8 @@ def cleanup_files(*file_paths):
         except Exception as e:
             print(f"Error cleaning up file {path}: {e}")
 
-# --- FastAPI Endpoints ---
-@app.get("/api/info", summary="Get Video Information")
+# --- FastAPI Endpoints (defined on the api_app) ---
+@api_app.get("/info", summary="Get Video Information")
 async def get_video_info(url: str = Query(..., description="The full URL of the YouTube video.")):
     try:
         yt = YouTube(url)
@@ -83,7 +86,7 @@ async def get_video_info(url: str = Query(..., description="The full URL of the 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/download", summary="Download and Merge Video")
+@api_app.get("/download", summary="Download and Merge Video")
 async def download_video(background_tasks: BackgroundTasks, url: str, video_itag: int, audio_itag: int):
     try:
         yt = YouTube(url)
