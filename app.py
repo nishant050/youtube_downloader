@@ -32,8 +32,8 @@ if not os.path.exists(DOWNLOADS_DIR):
     os.makedirs(DOWNLOADS_DIR)
 
 # --- FastAPI App ---
-# This will be mounted under the Streamlit app
-api_app = FastAPI(
+# This is now the main application that will run everything
+app = FastAPI(
     title="YouTube Downloader API",
     description="An API to fetch info and download high-quality YouTube videos by merging video and audio streams.",
     version="1.0.0",
@@ -69,7 +69,7 @@ def cleanup_files(*file_paths):
             print(f"Error cleaning up file {path}: {e}")
 
 # --- FastAPI Endpoints ---
-@api_app.get("/info", summary="Get Video Information")
+@app.get("/api/info", summary="Get Video Information")
 async def get_video_info(url: str = Query(..., description="The full URL of the YouTube video.")):
     try:
         yt = YouTube(url)
@@ -83,7 +83,7 @@ async def get_video_info(url: str = Query(..., description="The full URL of the 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_app.get("/download", summary="Download and Merge Video")
+@app.get("/api/download", summary="Download and Merge Video")
 async def download_video(background_tasks: BackgroundTasks, url: str, video_itag: int, audio_itag: int):
     try:
         yt = YouTube(url)
@@ -106,6 +106,7 @@ async def download_video(background_tasks: BackgroundTasks, url: str, video_itag
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Streamlit App ---
+# The Streamlit UI code is now defined in a function
 def run_streamlit():
     st.set_page_config(page_title="HQ YouTube Downloader", layout="wide")
     st.title("🎬 YouTube Video Downloader & API")
@@ -194,46 +195,19 @@ def run_streamlit():
         st.markdown("Downloads and merges the selected video and audio streams.")
         st.code("https://your-app-url/api/download?url=YOUTUBE_URL&video_itag=ITAG&audio_itag=ITAG")
 
-
 # --- Main App Mounting ---
-# This is the trick to run both FastAPI and Streamlit together
-# We create a dummy Streamlit app that will be replaced by the real one
-st_app_dummy = st.App() 
-st_app_dummy.add_page(run_streamlit, "Main")
+# Mount the API routes under the '/api' path on the main FastAPI app
+app.mount("/api", api_app)
 
-# Mount the FastAPI app under the '/api' path
-st_app_dummy.mount(api_app, path="api")
+# Create a temporary file to run the Streamlit app
+with open("streamlit_app.py", "w") as f:
+    f.write("import main\nmain.run_streamlit()")
+
+# Mount the Streamlit app as a WSGI application at the root
+app.mount("/", WSGIMiddleware(os.popen("streamlit run streamlit_app.py --server.headless true")._stream))
 
 # To run this unified app:
 # 1. Save the code as main.py
-# 2. Run in your terminal: streamlit run main.py
-"""
-
-### How to Use and Deploy This Unified App
-
-1.  **Save:** Save the code above as a single file named `main.py`.
-2.  **`requirements.txt`:** Your `requirements.txt` file needs to have all the libraries:
-    ```
-    streamlit
-    fastapi
-    uvicorn
-    pytubefix
-    python-multipart
-    aiofiles
-    nest-asyncio
-    ```
-3.  **`packages.txt`:** This remains the same for FFmpeg installation on Render.
-    ```
-    ffmpeg
-    ```
-4.  **Run Locally:** To run this new unified app, you only need one command:
-    ```bash
-    streamlit run main.py
-    ```
-5.  **Deployment to Render:**
-    * **Runtime:** Python
-    * **Build Command:** `pip install -r requirements.txt`
-    * **Start Command:** `streamlit run main.py --server.port $PORT`
-
-Now, when you go to your app's URL, you will see the Streamlit interface with two tabs: one for the interactive downloader and another explaining how to use the API, which is live at the `/api` sub-path. This is the most professional and flexible way to structure your projet
-"""
+# 2. Run in your terminal: uvicorn main:app --reload
+# 3. Access the Streamlit UI at http://127.0.0.1:8000/
+# 4. Access the API docs at http://127.0.0.1:8000/api/docs
