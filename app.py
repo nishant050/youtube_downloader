@@ -19,52 +19,74 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- Custom CSS for a more polished look ---
+# --- Custom CSS for a more polished, dark-themed look ---
 st.markdown("""
 <style>
-    /* General Styles */
+    /* General Styles - Dark Theme */
     .stApp {
-        background-color: #f0f2f6;
+        background-color: #1E1E1E;
+        color: #EAEAEA;
+    }
+    h1, h2, h3, h4, h5, h6 {
+        color: #FFFFFF;
     }
     .stButton>button {
         border-radius: 20px;
-        border: 1px solid #4B8BF5;
-        background-color: #4B8BF5;
+        border: 1px solid #6A5ACD; /* Slate Blue */
+        background-color: #6A5ACD;
         color: white;
         transition: all 0.2s ease-in-out;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     .stButton>button:hover {
-        background-color: #4A7EE5;
-        border-color: #4A7EE5;
+        background-color: #7B68EE; /* Medium Slate Blue */
+        border-color: #7B68EE;
         transform: scale(1.02);
     }
     .stButton>button:active {
-        background-color: #3e6dcf;
-        border-color: #3e6dcf;
+        background-color: #483D8B; /* Dark Slate Blue */
+        border-color: #483D8B;
     }
     .stTextInput>div>div>input {
         border-radius: 20px;
-        border: 1px solid #ced4da;
+        border: 1px solid #444;
+        background-color: #2D2D2D;
+        color: #EAEAEA;
     }
     [data-testid="stMetric"] {
-        background-color: #FFFFFF;
-        border: 1px solid #E0E0E0;
+        background-color: #2D2D2D;
+        border: 1px solid #444;
         border-radius: 10px;
         padding: 15px;
     }
-    [data-testid="stExpander"] {
+    [data-testid="stContainer"] {
+        background-color: #2D2D2D;
         border-radius: 10px;
-        border: 1px solid #E0E0E0;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab"] {
+        height: 44px;
+        background-color: transparent;
+        border-radius: 4px;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab"]:hover {
+        background-color: #444;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"] {
+        background-color: #6A5ACD;
     }
     .terminal {
-        background-color: #2b2b2b;
-        color: #f0f0f0;
-        font-family: 'Courier New', Courier, monospace;
+        background-color: #1A1A1A;
+        color: #00FF41; /* Green text for a classic terminal look */
+        font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
         padding: 1rem;
         border-radius: 10px;
         height: 400px;
         overflow-y: auto;
         border: 1px solid #444;
+        font-size: 0.875rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -85,7 +107,8 @@ def log_message(message):
     # Keep the log from getting too long
     if len(st.session_state.log) > 100:
         st.session_state.log = st.session_state.log[-100:]
-    st.session_state.terminal_display.markdown(f"<div class='terminal'><pre>{''.join(st.session_state.log)}</pre></div>", unsafe_allow_html=True)
+    if 'terminal_display' in st.session_state:
+        st.session_state.terminal_display.markdown(f"<div class='terminal'><pre>{''.join(st.session_state.log)}</pre></div>", unsafe_allow_html=True)
 
 def combine_video_audio_ffmpeg(video_path, audio_path, output_path):
     """Merges video and audio files using FFmpeg and logs the output."""
@@ -118,9 +141,9 @@ def combine_video_audio_ffmpeg(video_path, audio_path, output_path):
 
 def reset_state():
     """Clears the session state to start over."""
+    keys_to_keep = ['log', 'terminal_display']
     for key in list(st.session_state.keys()):
-        # Keep essential keys if needed, otherwise clear all
-        if key not in ['log', 'terminal_display']:
+        if key not in keys_to_keep:
              del st.session_state[key]
     st.session_state.log = ["Welcome! Waiting for process to start...\n"]
     if 'terminal_display' in st.session_state:
@@ -141,7 +164,7 @@ if 'audio_streams' not in st.session_state:
 
 
 # --- Main Application UI ---
-st.title("🎬 Advanced YouTube Downloader")
+st.title("🎬 Pro YouTube Downloader")
 st.markdown("Enter a YouTube URL to fetch download options. High-quality video and audio are downloaded separately and merged automatically.")
 
 # --- UI Layout ---
@@ -178,7 +201,7 @@ with main_col:
                 st.warning("Please enter a YouTube URL.")
 
     # --- Display Fetched Info and Download Options ---
-    if st.session_state.yt:
+    if st.session_state.get('yt'):
         with st.container(border=True):
             st.subheader("2. Select Quality & Download")
             info_col, thumb_col = st.columns([0.7, 0.3])
@@ -186,7 +209,7 @@ with main_col:
                 st.metric("Video Title", st.session_state.yt.title)
                 st.metric("Author", st.session_state.yt.author, delta=f"{st.session_state.yt.views:,} views")
             with thumb_col:
-                st.image(st.session_state.yt.thumbnail_url, use_column_width=True)
+                st.image(st.session_state.yt.thumbnail_url, use_container_width=True)
 
             video_tab, audio_tab = st.tabs(["🎬 Video Download", "🎵 Audio Only"])
 
@@ -295,7 +318,7 @@ with main_col:
                     st.info("No MP4 audio streams found for this video.")
 
     # --- Display Downloaded File ---
-    if st.session_state.download_info:
+    if st.session_state.get("download_info"):
         with st.container(border=True):
             st.subheader("3. Your File is Ready!")
             info = st.session_state.download_info
@@ -319,4 +342,3 @@ with terminal_col:
     if st.button("Clear Log & Reset", use_container_width=True):
         reset_state()
         st.rerun()
-
